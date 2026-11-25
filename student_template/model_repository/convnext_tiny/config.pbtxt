@@ -1,0 +1,64 @@
+name: "convnext_tiny"
+platform: "onnxruntime_onnx"
+max_batch_size: 32
+
+input [
+  {
+    name: "INPUT__0"
+    data_type: TYPE_FP32
+    format: FORMAT_NCHW
+    dims: [ 3, 224, 224 ]
+  }
+]
+
+output [
+  {
+    name: "OUTPUT__0"
+    data_type: TYPE_FP32
+    dims: [ 1000 ]
+  }
+]
+
+instance_group [
+  {
+    count: 1
+    kind: KIND_GPU
+  }
+]
+
+parameters {
+  key: "cudnn_conv_algo_search"
+  value: { string_value: "1" }
+}
+
+dynamic_batching {
+  preferred_batch_size: [ 4, 8, 16 ]
+  max_queue_delay_microseconds: 30000
+}
+
+model_warmup [
+  {
+    name: "warmup_bs1"
+    batch_size: 1
+    inputs {
+      key: "INPUT__0"
+      value: {
+        data_type: TYPE_FP32
+        dims: [ 3, 224, 224 ]
+        random_data: true
+      }
+    }
+  },
+  {
+    name: "warmup_bs8"
+    batch_size: 8
+    inputs {
+      key: "INPUT__0"
+      value: {
+        data_type: TYPE_FP32
+        dims: [ 3, 224, 224 ]
+        random_data: true
+      }
+    }
+  }
+]

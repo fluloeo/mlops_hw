@@ -1,0 +1,112 @@
+# Стек ДЗ: Triton + vLLM + gateway + Prometheus + node-exporter.
+# Обе модели делят один GPU.
+name: hw-realtime-inference
+
+services:
+  triton:
+    image: nvcr.nju.edu.cn/nvidia/tritonserver@sha256:153d3158d96346bc50df7fa6e1c3a96d6dc638249072be20ebbbcae07b8505ca
+    platform: linux/amd64
+    command:
+      - tritonserver
+      - --model-repository=/models
+      - --model-control-mode=explicit
+      - --load-model=${CV_MODEL}
+      - --allow-metrics=true
+      - --allow-gpu-metrics=true
+      - --metrics-port=8002
+    volumes:
+      - ./model_repository:/models
+    ports:
+      - "8002:8002"
+    shm_size: "2gb"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/v2/health/ready')"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+    restart: unless-stopped
+
+  vllm:
+    image: vllm/vllm-openai:v0.33.0
+    command:
+      - --model
+      - Qwen/Qwen2.5-1.5B-Instruct
+      - --served-model-name
+      - ${LLM_MODEL}
+      - --gpu-memory-utilization
+      - "0.5"
+      - --max-model-len
+      - "4096"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+    environment:
+      - HUGGING_FACE_HUB_TOKEN=${HF_TOKEN:-}
+    volumes:
+      - hf_cache:/root/.cache/huggingface
+    ipc: host
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 15s
+      timeout: 5s
+      retries: 40
+      start_period: 300s
+    restart: unless-stopped
+
+  gateway:
+    build: ./gateway
+    environment:
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET is required}
+      - CV_MODEL=${CV_MODEL}
+      - LLM_MODEL=${LLM_MODEL}
+      - TRITON_URL=triton:8000
+      - TRITON_METRICS_URL=http://triton:8002/metrics
+      - VLLM_URL=http://vllm:8000
+      - VLLM_METRICS_URL=http://vllm:8000/metrics
+      - NODE_METRICS_URL=http://node-exporter:9100/metrics
+      - GPU_NAME=${GPU_NAME:-}
+      - STUDENT_NAME=${STUDENT_NAME}
+      - STUDENT_EMAIL=${STUDENT_EMAIL}
+    ports:
+      - "${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      triton:
+        condition: service_healthy
+      vllm:
+        condition: service_healthy
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v2.53.0
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    restart: unless-stopped
+
+  node-exporter:
+    image: prom/node-exporter:v1.8.1
+    ports:
+      - "9100:9100"
+    restart: unless-stopped
+
+volumes:
+  hf_cache:
+  prometheus_data:
